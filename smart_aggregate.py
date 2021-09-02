@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
 
-# FIXME check for disk serials so that disks don't get counted twice
-
 import argparse
 import csv
 import dataclasses
@@ -11,7 +9,7 @@ import os
 import pprint
 import re
 import sys
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 import fabric
 
@@ -151,9 +149,64 @@ def smart_flattened_reports(hosts: List[str]) -> List[DeviceReport]:
 
     for host, reports in sorted(all_host_reports.items()):
 
+        # Specify types to PyCharm
+        host: str = host
+        reports: Dict[SmartCtlDevice, SmartCtlDeviceReport] = reports
+
+        # Some servers have some disks unconfigured, so they're detected twice by "smartctl --scan":
+        #
+        #     # smartctl --scan
+        #     /dev/sda -d scsi # /dev/sda, SCSI device                              <--- serial "0123456789ABCDE"
+        #     /dev/sdb -d scsi # /dev/sdb, SCSI device
+        #     /dev/bus/0 -d megaraid,0 # /dev/bus/0 [megaraid_disk_00], SCSI device
+        #     /dev/bus/0 -d megaraid,1 # /dev/bus/0 [megaraid_disk_01], SCSI device
+        #     /dev/bus/0 -d megaraid,2 # /dev/bus/0 [megaraid_disk_02], SCSI device <--- serial "0123456789ABCDE"
+        #
+        # and for whatever reason smartctl can't run the "Extended Offline" test on the "/dev/sdX -d scsi" disk, so we
+        # deduplicate these here leaving only the "/dev/bus/X -d megaraid,Y" entry.
+        reports_by_serial_number: Dict[str, Tuple[SmartCtlDevice, SmartCtlDeviceReport]] = dict()
+        # noinspection PyTypeChecker
         for disk, report in sorted(reports.items()):
 
             # Make PyCharm smart again
+            disk: SmartCtlDevice = disk
+            report: SmartCtlDeviceReport = report
+
+            serial_number = report.json['serial_number'].strip().lower()
+            if serial_number in reports_by_serial_number:
+                existing_disk, _ = reports_by_serial_number[serial_number]
+                logging.debug(f"Existing duplicate disk: {existing_disk}")
+
+                if existing_disk.type.startswith('megaraid'):
+                    assert not disk.type.startswith('megaraid'), f"Two MegaRAID disks on host {host} with same serial."
+
+                    # Existing disk MegaRAID, new disk is not MegaRAID, so leave the old one
+                    overwrite_disk = False
+                else:
+                    assert disk.type.startswith('megaraid'), f"Two non-MegaRAID disks on host {host} with same serial."
+
+                    # Existing disk is not MegaRAID, new disk is MegaRAID, so overwrite with the new one
+                    overwrite_disk = True
+            else:
+                # First time we're seeing this disk
+                overwrite_disk = True
+
+            if overwrite_disk:
+                logging.debug(f"Under serial number {serial_number} storing disk {disk}")
+                reports_by_serial_number[serial_number] = (disk, report,)
+
+        logging.debug(f"Deduplicated disks:\n{pp.pformat(reports_by_serial_number)}")
+
+        reports: Dict[SmartCtlDevice, SmartCtlDeviceReport] = dict()
+        for serial_number, disk_and_reports in reports_by_serial_number.items():
+            disk, report = disk_and_reports
+            reports[disk] = report
+
+        # noinspection PyTypeChecker
+        for disk, report in sorted(reports.items()):
+
+            # Make PyCharm smart again
+            disk: SmartCtlDevice = disk
             report: SmartCtlDeviceReport = report
 
             # Skip RAID controllers themselves
