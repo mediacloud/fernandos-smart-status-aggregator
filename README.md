@@ -22,6 +22,9 @@ SSH into multiple servers, run `smartctl` and aggregate results into a CSV.
     ```bash
     ansible all -m shell -a 'smartctl --scan | cut -d "#" -f 1 | xargs -I {} smartctl -a {} -t long'
     ```
+   
+    Wait a few hours for them to complete.
+
 4. Add all hosts to be tested to `~/.ssh/config`, e.g.:
 
     ```
